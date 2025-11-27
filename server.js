@@ -12,23 +12,34 @@ const wss = new WebSocketServer({ server });
 const rooms = new Map();
 
 wss.on("connection", (ws) => {
-  ws.on("message", (raw) => {
-    const msg = JSON.parse(raw);
-
-    if (msg.type === "join") {
-      if (!rooms.has(msg.roomId)) rooms.set(msg.roomId, []);
-      rooms.get(msg.roomId).push(ws);
-      ws.roomId = msg.roomId;
-      return;
-    }
-
-    // relay
+  ws.on("message", (raw, isBinary) => {
+  // 如果是二进制，不要 JSON.parse，直接广播
+  if (isBinary) {
     rooms.get(ws.roomId)?.forEach((client) => {
       if (client !== ws && client.readyState === 1) {
-        client.send(JSON.stringify(msg));
+        client.send(raw, { binary: true });
       }
     });
+    return;
+  }
+
+  // 否则是文本消息
+  const msg = JSON.parse(raw);
+
+  if (msg.type === "join") {
+    if (!rooms.has(msg.roomId)) rooms.set(msg.roomId, []);
+    rooms.get(msg.roomId).push(ws);
+    ws.roomId = msg.roomId;
+    return;
+  }
+
+  // 普通文本 relay
+  rooms.get(ws.roomId)?.forEach((client) => {
+    if (client !== ws && client.readyState === 1) {
+      client.send(JSON.stringify(msg));
+    }
   });
+});
 
   ws.on("close", () => {
     if (ws.roomId && rooms.has(ws.roomId)) {
