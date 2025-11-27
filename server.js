@@ -1,14 +1,19 @@
 import { WebSocketServer } from "ws";
 import http from "http";
 
-const server = http.createServer();
+const server = http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end("ok");
+});
+
+// websocket server
 const wss = new WebSocketServer({ server });
 
 const rooms = new Map();
 
 wss.on("connection", (ws) => {
-  ws.on("message", (data) => {
-    let msg = JSON.parse(data);
+  ws.on("message", (raw) => {
+    const msg = JSON.parse(raw);
 
     if (msg.type === "join") {
       if (!rooms.has(msg.roomId)) rooms.set(msg.roomId, []);
@@ -17,7 +22,7 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // relay to peers in same room
+    // relay
     rooms.get(ws.roomId)?.forEach((client) => {
       if (client !== ws && client.readyState === 1) {
         client.send(JSON.stringify(msg));
@@ -27,12 +32,17 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     if (ws.roomId && rooms.has(ws.roomId)) {
-      rooms.set(ws.roomId, rooms.get(ws.roomId).filter((c) => c !== ws));
+      rooms.set(
+        ws.roomId,
+        rooms.get(ws.roomId).filter((c) => c !== ws)
+      );
     }
   });
 });
 
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => {
-  console.log("WebRTC Signaling Server on port " + PORT);
+
+// MUST LISTEN ON 0.0.0.0
+server.listen(PORT, "0.0.0.0", () => {
+  console.log("Signaling server running on port " + PORT);
 });
