@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<body>
+<h3>Waiting for caller...</h3>
+
+<audio id="remote" autoplay></audio>
+
+<script>
+const ws = new WebSocket("wss://socketbe.onrender.com"); // ← change
+ws.onopen = () => ws.send(JSON.stringify({ type: "join", roomId: "r1" }));
+
+let pc = new RTCPeerConnection();
+
+// Receive remote audio track
+pc.ontrack = (e) => {
+  document.getElementById("remote").srcObject = e.streams[0];
+};
+
+// Send ICE to caller
+pc.onicecandidate = (e) => {
+  if (e.candidate) ws.send(JSON.stringify({ type: "ice", candidate: e.candidate }));
+};
+
+ws.onmessage = async (e) => {
+  const msg = JSON.parse(e.data);
+
+  if (msg.type === "offer") {
+    // Set remote offer
+    await pc.setRemoteDescription(msg.offer);
+
+    // Create answer
+    const ans = await pc.createAnswer();
+    await pc.setLocalDescription(ans);
+
+    ws.send(JSON.stringify({ type: "answer", answer: ans }));
+  }
+
+  if (msg.type === "ice") {
+    await pc.addIceCandidate(msg.candidate);
+  }
+};
+</script>
+</body>
+</html>

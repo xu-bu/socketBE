@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<body>
+<h2>Sender</h2>
+
+<button id="mic">Start Mic Stream</button>
+<br><br>
+
+<input type="file" id="fileInput" accept="audio/*">
+<button id="fileBtn">Send Selected MP3</button>
+
+<script>
+const ws = new WebSocket("wss://socketbe.onrender.com"); // ← change this
+ws.onopen = () => ws.send(JSON.stringify({ type: "join", roomId: "r1" }));
+
+let pc;
+let senderTrack; // keep current track (mic or mp3)
+
+async function createPeerConnection() {
+  pc = new RTCPeerConnection();
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate) ws.send(JSON.stringify({ type: "ice", candidate: e.candidate }));
+  };
+
+  // Create offer only once
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  ws.send(JSON.stringify({ type: "offer", offer }));
+}
+
+/* -------------------------
+   MODE 1: Microphone Stream
+------------------------- */
+document.getElementById("mic").onclick = async () => {
+  await createPeerConnection();
+
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+  // add first track only
+  senderTrack = stream.getAudioTracks()[0];
+  pc.addTrack(senderTrack, stream);
+};
+
+/* -------------------------
+   MODE 2: MP3 File Stream
+------------------------- */
+document.getElementById("fileBtn").onclick = async () => {
+  const file = document.getElementById("fileInput").files[0];
+  if (!file) return alert("Please choose an MP3 file first");
+
+  await createPeerConnection();
+
+  // create audio element for playback
+  const audio = new Audio();
+  audio.src = URL.createObjectURL(file);
+  audio.loop = false;
+  audio.play();
+
+  // capture the playing audio as a MediaStream
+  const stream = audio.captureStream
+    ? audio.captureStream()
+    : audio.mozCaptureStream(); // Firefox fallback
+
+  // wait until ready
+  await new Promise(r => setTimeout(r, 300));
+
+  senderTrack = stream.getAudioTracks()[0];
+  pc.addTrack(senderTrack, stream);
+};
+
+/* -------------------------
+     RECEIVE WebRTC Answers
+------------------------- */
+ws.onmessage = async (e) => {
+  const msg = JSON.parse(e.data);
+
+  if (msg.type === "answer") {
+    await pc.setRemoteDescription(msg.answer);
+  }
+
+  if (msg.type === "ice") {
+    await pc.addIceCandidate(msg.candidate);
+  }
+};
+</script>
+</body>
+</html>
