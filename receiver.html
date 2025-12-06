@@ -1,5 +1,21 @@
 <!DOCTYPE html>
 <html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  body { font-family: Arial, sans-serif; padding: 20px; }
+  #enableAudio { 
+    padding: 15px 30px; 
+    font-size: 18px; 
+    background: #4CAF50; 
+    color: white; 
+    border: none; 
+    border-radius: 5px; 
+    cursor: pointer; 
+  }
+  #enableAudio:active { background: #45a049; }
+</style>
+</head>
 <body>
 <h3>Receiver</h3>
 
@@ -12,8 +28,12 @@
   Status: Waiting for audio stream...
 </div>
 
-<button id="enableAudio" style="padding: 10px 20px; font-size: 16px; display: none;">
+<button id="enableAudio" style="display: none;">
   🔊 Click to Enable Audio
+</button>
+
+<button id="quitBtn" style="padding: 10px 20px; background: #f44336; color: white; border: none; border-radius: 5px; cursor: pointer; margin-top: 10px;">
+  ❌ Quit Room
 </button>
 
 <audio id="remote" autoplay playsinline></audio>
@@ -25,10 +45,38 @@ ws.onopen = () => {
 };
 
 let pc = new RTCPeerConnection();
+let remoteStream = null;
 let audioEnabled = false;
+
+function cleanup() {
+  // Stop audio
+  const audio = document.getElementById("remote");
+  audio.pause();
+  audio.srcObject = null;
+  
+  // Stop all tracks in remote stream
+  if (remoteStream) {
+    remoteStream.getTracks().forEach(track => track.stop());
+    remoteStream = null;
+  }
+  
+  // Close peer connection
+  if (pc) {
+    pc.close();
+    pc = null;
+  }
+  
+  // Close websocket
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.close();
+  }
+  
+  updateStatus("Disconnected from room");
+}
 
 function updateStatus(msg) {
   document.getElementById("status").textContent = "Status: " + msg;
+  console.log("Status:", msg);
 }
 
 function updateRoomStatus(users) {
@@ -40,32 +88,87 @@ function updateRoomStatus(users) {
   }
 }
 
-// Enable audio button
-document.getElementById("enableAudio").onclick = () => {
+// Enable audio button - try to play the remote stream
+document.getElementById("enableAudio").onclick = async () => {
   const audio = document.getElementById("remote");
-  audio.play().then(() => {
+  
+  console.log("Button clicked");
+  console.log("Audio srcObject:", audio.srcObject);
+  console.log("Remote stream:", remoteStream);
+  
+  // Make sure we have the stream
+  if (remoteStream) {
+    audio.srcObject = remoteStream;
+  }
+  
+  // Try to play
+  try {
+    // For mobile, set volume explicitly
+    audio.volume = 1.0;
+    audio.muted = false;
+    
+    await audio.play();
+    
     audioEnabled = true;
     document.getElementById("enableAudio").style.display = "none";
-    updateStatus("Audio enabled and playing!");
-  }).catch(e => {
+    updateStatus("Audio enabled and playing! 🔊");
+    
+    console.log("Audio playing successfully");
+  } catch (e) {
     console.error("Audio play failed:", e);
-    updateStatus("Failed to play audio: " + e.message);
-  });
+    updateStatus("Failed to play: " + e.message + " - Try again!");
+  }
+};
+
+// Quit button - disconnect from room
+document.getElementById("quitBtn").onclick = () => {
+  if (confirm("Are you sure you want to quit the room?")) {
+    cleanup();
+    document.getElementById("enableAudio").style.display = "none";
+    document.getElementById("quitBtn").disabled = true;
+    document.getElementById("quitBtn").textContent = "Disconnected";
+    document.getElementById("userList").textContent = "Not connected";
+  }
 };
 
 pc.ontrack = (e) => {
-  console.log("Received track:", e.track.kind);
+  console.log("Received track:", e.track.kind, "readyState:", e.track.readyState);
+  
+  // Store the stream
+  remoteStream = e.streams[0];
+  
   const audio = document.getElementById("remote");
-  audio.srcObject = e.streams[0];
+  audio.srcObject = remoteStream;
   
-  updateStatus("Audio stream received!");
+  updateStatus("Audio stream received! Setting up...");
   
-  // Show enable button if autoplay fails
-  audio.play().catch(err => {
-    console.log("Autoplay blocked, showing button");
-    document.getElementById("enableAudio").style.display = "block";
-    updateStatus("Click button to enable audio (autoplay blocked)");
-  });
+  // Check if track is actually producing audio
+  e.track.onended = () => {
+    console.log("Track ended");
+    updateStatus("Audio stream ended");
+  };
+  
+  e.track.onmute = () => {
+    console.log("Track muted");
+  };
+  
+  e.track.onunmute = () => {
+    console.log("Track unmuted");
+  };
+  
+  // Try autoplay first
+  audio.play()
+    .then(() => {
+      console.log("Autoplay succeeded");
+      audioEnabled = true;
+      updateStatus("Audio playing automatically! 🔊");
+    })
+    .catch(err => {
+      console.log("Autoplay blocked:", err.name);
+      // Show button for user interaction
+      document.getElementById("enableAudio").style.display = "block";
+      updateStatus("🔴 Click the button below to enable audio!");
+    });
 };
 
 pc.onicecandidate = (e) => {
@@ -77,7 +180,11 @@ pc.onicecandidate = (e) => {
 pc.onconnectionstatechange = () => {
   console.log("Connection state:", pc.connectionState);
   if (pc.connectionState === "connected") {
-    updateStatus("WebRTC connected!");
+    updateStatus("WebRTC connected! Waiting for audio...");
+  } else if (pc.connectionState === "failed") {
+    updateStatus("Connection failed!");
+  } else if (pc.connectionState === "disconnected") {
+    updateStatus("Disconnected");
   }
 };
 
@@ -90,7 +197,7 @@ ws.onmessage = async (e) => {
     const ans = await pc.createAnswer();
     await pc.setLocalDescription(ans);
     ws.send(JSON.stringify({ type: "answer", answer: ans }));
-    updateStatus("Sent answer, waiting for connection...");
+    updateStatus("Sent answer, establishing connection...");
   }
 
   if (msg.type === "ice") {

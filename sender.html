@@ -1,147 +1,347 @@
 <!DOCTYPE html>
 <html>
-<body>
-<h2>Sender</h2>
+  <body>
+    <h2>Sender</h2>
 
-<div id="roomStatus" style="background: #f0f0f0; padding: 10px; margin-bottom: 20px; border-radius: 5px;">
-  <strong>Room: r1</strong><br>
-  <span id="userList">Connecting...</span>
-</div>
+    <div
+      id="roomStatus"
+      style="
+        background: #f0f0f0;
+        padding: 10px;
+        margin-bottom: 20px;
+        border-radius: 5px;
+      "
+    >
+      <strong>Room: r1</strong><br />
+      <span id="userList">Connecting...</span>
+    </div>
 
-<div id="status" style="padding: 10px; margin-bottom: 10px; background: #d1ecf1; border-radius: 5px;">
-  Status: Ready
-</div>
+    <div
+      id="status"
+      style="
+        padding: 10px;
+        margin-bottom: 10px;
+        background: #d1ecf1;
+        border-radius: 5px;
+      "
+    >
+      Status: Ready
+    </div>
 
-<button id="mic">Start Mic Stream</button>
-<br><br>
+    <button id="mic">Start Mic Stream</button>
+    <button
+      id="stopMic"
+      style="
+        display: none;
+        background: #f44336;
+        color: white;
+        margin-left: 10px;
+      "
+    >
+      Stop Mic
+    </button>
+    <br /><br />
 
-<input type="file" id="fileInput" accept="audio/*">
-<button id="fileBtn">Send Selected MP3</button>
+    <button id="systemAudio">📱 Share Phone Audio</button>
+    <button
+      id="stopSystem"
+      style="
+        display: none;
+        background: #f44336;
+        color: white;
+        margin-left: 10px;
+      "
+    >
+      Stop System Audio
+    </button>
+    <br /><br />
 
-<script>
-const ws = new WebSocket("wss://socketbe.onrender.com");
-ws.onopen = () => {
-  ws.send(JSON.stringify({ type: "join", roomId: "r1", userId: "Sender" }));
-};
+    <input type="file" id="fileInput" accept="audio/*" />
+    <button id="fileBtn">Send Selected MP3</button>
+    <button
+      id="stopFile"
+      style="
+        display: none;
+        background: #f44336;
+        color: white;
+        margin-left: 10px;
+      "
+    >
+      Stop MP3
+    </button>
 
-let pc;
-let senderTrack;
+    <script>
+      const ws = new WebSocket("wss://socketbe.onrender.com");
+      ws.onopen = () => {
+        ws.send(
+          JSON.stringify({ type: "join", roomId: "r1", userId: "Sender" })
+        );
+      };
 
-function updateStatus(msg) {
-  document.getElementById("status").textContent = "Status: " + msg;
-}
+      let pc;
+      let senderTrack;
+      let streamToShare;
+      let currentAudio; // For MP3 playback
 
-function updateRoomStatus(users) {
-  const userList = document.getElementById("userList");
-  if (users.length === 0) {
-    userList.textContent = "No users in room";
-  } else {
-    userList.textContent = `Users in room (${users.length}): ${users.join(", ")}`;
-  }
-}
+      function updateStatus(msg) {
+        document.getElementById("status").textContent = "Status: " + msg;
+      }
 
-async function createPeerConnection() {
-  if (pc) {
-    pc.close();
-  }
-  
-  pc = new RTCPeerConnection();
+      function updateRoomStatus(users) {
+        const userList = document.getElementById("userList");
+        if (users.length === 0) {
+          userList.textContent = "No users in room";
+        } else {
+          userList.textContent = `Users in room (${users.length}): ${users.join(
+            ", "
+          )}`;
+        }
+      }
 
-  pc.onicecandidate = (e) => {
-    if (e.candidate) {
-      ws.send(JSON.stringify({ type: "ice", candidate: e.candidate }));
-    }
-  };
+      async function createPeerConnection() {
+        if (pc) {
+          pc.close();
+        }
 
-  pc.onconnectionstatechange = () => {
-    console.log("Connection state:", pc.connectionState);
-    updateStatus("Connection: " + pc.connectionState);
-  };
-}
+        pc = new RTCPeerConnection();
 
-document.getElementById("mic").onclick = async () => {
-  try {
-    updateStatus("Requesting microphone access...");
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    
-    await createPeerConnection();
-    
-    senderTrack = stream.getAudioTracks()[0];
-    pc.addTrack(senderTrack, stream);
-    
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    ws.send(JSON.stringify({ type: "offer", offer }));
-    
-    updateStatus("Microphone streaming!");
-  } catch (err) {
-    updateStatus("Error: " + err.message);
-    console.error(err);
-  }
-};
+        pc.onicecandidate = (e) => {
+          if (e.candidate) {
+            ws.send(JSON.stringify({ type: "ice", candidate: e.candidate }));
+          }
+        };
 
-document.getElementById("fileBtn").onclick = async () => {
-  const file = document.getElementById("fileInput").files[0];
-  if (!file) return alert("Please choose an MP3 file first");
+        pc.onconnectionstatechange = () => {
+          console.log("Connection state:", pc.connectionState);
+          updateStatus("Connection: " + pc.connectionState);
+        };
+      }
 
-  try {
-    updateStatus("Preparing MP3 stream...");
-    
-    await createPeerConnection();
+      function stopSharing() {
+        // Stop all tracks
+        if (senderTrack) {
+          senderTrack.stop();
+          senderTrack = null;
+        }
 
-    const audio = new Audio();
-    audio.src = URL.createObjectURL(file);
-    audio.loop = false;
-    
-    // Wait for audio to be ready
-    await new Promise((resolve, reject) => {
-      audio.onloadedmetadata = resolve;
-      audio.onerror = reject;
-      setTimeout(reject, 5000); // timeout after 5s
-    });
-    
-    // Capture stream BEFORE playing
-    const stream = audio.captureStream ? audio.captureStream() : audio.mozCaptureStream();
-    
-    senderTrack = stream.getAudioTracks()[0];
-    pc.addTrack(senderTrack, stream);
-    
-    // Create and send offer
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    ws.send(JSON.stringify({ type: "offer", offer }));
-    
-    // Now play the audio
-    await audio.play();
-    
-    updateStatus("MP3 streaming: " + file.name);
-    
-    audio.onended = () => {
-      updateStatus("MP3 finished playing");
-    };
-    
-  } catch (err) {
-    updateStatus("Error: " + err.message);
-    console.error(err);
-  }
-};
+        if (streamToShare) {
+          streamToShare.getTracks().forEach((track) => track.stop());
+          streamToShare = null;
+        }
 
-ws.onmessage = async (e) => {
-  const msg = JSON.parse(e.data);
+        // Stop audio element
+        if (currentAudio) {
+          currentAudio.pause();
+          currentAudio.src = "";
+          currentAudio = null;
+        }
 
-  if (msg.type === "answer") {
-    await pc.setRemoteDescription(msg.answer);
-    console.log("Received answer, connection should establish");
-  }
+        // Close peer connection
+        if (pc) {
+          pc.close();
+          pc = null;
+        }
 
-  if (msg.type === "ice") {
-    await pc.addIceCandidate(msg.candidate);
-  }
+        updateStatus("Stopped sharing");
+      }
 
-  if (msg.type === "roomUpdate") {
-    updateRoomStatus(msg.users);
-  }
-};
-</script>
-</body>
+      document.getElementById("mic").onclick = async () => {
+        try {
+          updateStatus("Requesting microphone access...");
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+          });
+
+          streamToShare = stream;
+
+          await createPeerConnection();
+
+          senderTrack = stream.getAudioTracks()[0];
+          pc.addTrack(senderTrack, stream);
+
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          ws.send(JSON.stringify({ type: "offer", offer }));
+
+          updateStatus("Microphone streaming!");
+
+          // Show stop button, hide start button
+          document.getElementById("mic").style.display = "none";
+          document.getElementById("stopMic").style.display = "inline-block";
+        } catch (err) {
+          updateStatus("Error: " + err.message);
+          console.error(err);
+        }
+      };
+
+      document.getElementById("stopMic").onclick = () => {
+        stopSharing();
+        // Show start button, hide stop button
+        document.getElementById("mic").style.display = "inline-block";
+        document.getElementById("stopMic").style.display = "none";
+      };
+
+      /* -------------------------
+   MODE 3: System Audio (Phone/App Audio)
+------------------------- */
+      document.getElementById("systemAudio").onclick = async () => {
+        try {
+          updateStatus("Requesting screen/audio share...");
+
+          // Request display media with audio
+          let steam;
+
+          if (navigator.mediaDevices.getUserMedia) {
+            steam = await navigator.mediaDevices.getUserMedia({
+              audio: true,
+              video: false,
+            });
+          } else {
+            navigator.getWebcam =
+              navigator.getUserMedia ||
+              navigator.webKitGetUserMedia ||
+              navigator.moxGetUserMedia ||
+              navigator.mozGetUserMedia ||
+              navigator.msGetUserMedia;
+            steam = await navigator.getWebcam({
+              audio: true,
+              video: false,
+            });
+          }
+          streamToShare = stream;
+
+          await createPeerConnection();
+
+          // Get only the audio track
+          const audioTrack = stream.getAudioTracks()[0];
+
+          if (!audioTrack) {
+            alert(
+              "No audio track found. Make sure to enable 'Share audio' when prompted!"
+            );
+            stopSharing();
+            return;
+          }
+
+          senderTrack = audioTrack;
+          pc.addTrack(senderTrack, stream);
+
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          ws.send(JSON.stringify({ type: "offer", offer }));
+
+          updateStatus("System audio streaming! 🔊");
+
+          // Show stop button, hide start button
+          document.getElementById("systemAudio").style.display = "none";
+          document.getElementById("stopSystem").style.display = "inline-block";
+
+          // Handle when user stops sharing from browser UI
+          audioTrack.onended = () => {
+            updateStatus("System audio sharing stopped");
+            stopSharing();
+            document.getElementById("systemAudio").style.display =
+              "inline-block";
+            document.getElementById("stopSystem").style.display = "none";
+          };
+        } catch (err) {
+          updateStatus("Error: " + err.message);
+          console.error(err);
+
+          if (err.name === "NotAllowedError") {
+            alert(
+              "Permission denied. Please allow screen/audio sharing when prompted."
+            );
+          }
+        }
+      };
+
+      document.getElementById("stopSystem").onclick = () => {
+        stopSharing();
+        document.getElementById("systemAudio").style.display = "inline-block";
+        document.getElementById("stopSystem").style.display = "none";
+      };
+
+      document.getElementById("fileBtn").onclick = async () => {
+        const file = document.getElementById("fileInput").files[0];
+        if (!file) return alert("Please choose an MP3 file first");
+
+        try {
+          updateStatus("Preparing MP3 stream...");
+
+          await createPeerConnection();
+
+          const audio = new Audio();
+          audio.src = URL.createObjectURL(file);
+          audio.loop = false;
+          currentAudio = audio;
+
+          // Wait for audio to be ready
+          await new Promise((resolve, reject) => {
+            audio.onloadedmetadata = resolve;
+            audio.onerror = reject;
+            setTimeout(reject, 5000); // timeout after 5s
+          });
+
+          // Capture stream BEFORE playing
+          const stream = audio.captureStream
+            ? audio.captureStream()
+            : audio.mozCaptureStream();
+          streamToShare = stream;
+
+          senderTrack = stream.getAudioTracks()[0];
+          pc.addTrack(senderTrack, stream);
+
+          // Create and send offer
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          ws.send(JSON.stringify({ type: "offer", offer }));
+
+          // Now play the audio
+          await audio.play();
+
+          updateStatus("MP3 streaming: " + file.name);
+
+          // Show stop button, hide start button
+          document.getElementById("fileBtn").style.display = "none";
+          document.getElementById("stopFile").style.display = "inline-block";
+
+          audio.onended = () => {
+            updateStatus("MP3 finished playing");
+            stopSharing();
+            document.getElementById("fileBtn").style.display = "inline-block";
+            document.getElementById("stopFile").style.display = "none";
+          };
+        } catch (err) {
+          updateStatus("Error: " + err.message);
+          console.error(err);
+        }
+      };
+
+      document.getElementById("stopFile").onclick = () => {
+        stopSharing();
+        // Show start button, hide stop button
+        document.getElementById("fileBtn").style.display = "inline-block";
+        document.getElementById("stopFile").style.display = "none";
+        document.getElementById("fileInput").value = ""; // Clear file input
+      };
+
+      ws.onmessage = async (e) => {
+        const msg = JSON.parse(e.data);
+
+        if (msg.type === "answer") {
+          await pc.setRemoteDescription(msg.answer);
+          console.log("Received answer, connection should establish");
+        }
+
+        if (msg.type === "ice") {
+          await pc.addIceCandidate(msg.candidate);
+        }
+
+        if (msg.type === "roomUpdate") {
+          updateRoomStatus(msg.users);
+        }
+      };
+    </script>
+  </body>
 </html>
