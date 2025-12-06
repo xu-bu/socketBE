@@ -1,42 +1,104 @@
 <!DOCTYPE html>
 <html>
 <body>
-<h3>Waiting for caller...</h3>
+<h3>Receiver</h3>
 
-<audio id="remote" autoplay></audio>
+<div id="roomStatus" style="background: #f0f0f0; padding: 10px; margin-bottom: 20px; border-radius: 5px;">
+  <strong>Room: r1</strong><br>
+  <span id="userList">Connecting...</span>
+</div>
+
+<div id="status" style="padding: 10px; margin-bottom: 10px; background: #fff3cd; border-radius: 5px;">
+  Status: Waiting for audio stream...
+</div>
+
+<button id="enableAudio" style="padding: 10px 20px; font-size: 16px; display: none;">
+  🔊 Click to Enable Audio
+</button>
+
+<audio id="remote" autoplay playsinline></audio>
 
 <script>
-const ws = new WebSocket("wss://socketbe.onrender.com"); // ← change
-ws.onopen = () => ws.send(JSON.stringify({ type: "join", roomId: "r1" }));
-
-let pc = new RTCPeerConnection();
-
-// Receive remote audio track
-pc.ontrack = (e) => {
-  document.getElementById("remote").srcObject = e.streams[0];
+const ws = new WebSocket("wss://socketbe.onrender.com");
+ws.onopen = () => {
+  ws.send(JSON.stringify({ type: "join", roomId: "r1", userId: "Receiver" }));
 };
 
-// Send ICE to caller
+let pc = new RTCPeerConnection();
+let audioEnabled = false;
+
+function updateStatus(msg) {
+  document.getElementById("status").textContent = "Status: " + msg;
+}
+
+function updateRoomStatus(users) {
+  const userList = document.getElementById("userList");
+  if (users.length === 0) {
+    userList.textContent = "No users in room";
+  } else {
+    userList.textContent = `Users in room (${users.length}): ${users.join(", ")}`;
+  }
+}
+
+// Enable audio button
+document.getElementById("enableAudio").onclick = () => {
+  const audio = document.getElementById("remote");
+  audio.play().then(() => {
+    audioEnabled = true;
+    document.getElementById("enableAudio").style.display = "none";
+    updateStatus("Audio enabled and playing!");
+  }).catch(e => {
+    console.error("Audio play failed:", e);
+    updateStatus("Failed to play audio: " + e.message);
+  });
+};
+
+pc.ontrack = (e) => {
+  console.log("Received track:", e.track.kind);
+  const audio = document.getElementById("remote");
+  audio.srcObject = e.streams[0];
+  
+  updateStatus("Audio stream received!");
+  
+  // Show enable button if autoplay fails
+  audio.play().catch(err => {
+    console.log("Autoplay blocked, showing button");
+    document.getElementById("enableAudio").style.display = "block";
+    updateStatus("Click button to enable audio (autoplay blocked)");
+  });
+};
+
 pc.onicecandidate = (e) => {
-  if (e.candidate) ws.send(JSON.stringify({ type: "ice", candidate: e.candidate }));
+  if (e.candidate) {
+    ws.send(JSON.stringify({ type: "ice", candidate: e.candidate }));
+  }
+};
+
+pc.onconnectionstatechange = () => {
+  console.log("Connection state:", pc.connectionState);
+  if (pc.connectionState === "connected") {
+    updateStatus("WebRTC connected!");
+  }
 };
 
 ws.onmessage = async (e) => {
   const msg = JSON.parse(e.data);
 
   if (msg.type === "offer") {
-    // Set remote offer
+    console.log("Received offer");
     await pc.setRemoteDescription(msg.offer);
-
-    // Create answer
     const ans = await pc.createAnswer();
     await pc.setLocalDescription(ans);
-
     ws.send(JSON.stringify({ type: "answer", answer: ans }));
+    updateStatus("Sent answer, waiting for connection...");
   }
 
   if (msg.type === "ice") {
     await pc.addIceCandidate(msg.candidate);
+  }
+
+  if (msg.type === "roomUpdate") {
+    updateRoomStatus(msg.users);
   }
 };
 </script>

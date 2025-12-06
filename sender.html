@@ -3,6 +3,15 @@
 <body>
 <h2>Sender</h2>
 
+<div id="roomStatus" style="background: #f0f0f0; padding: 10px; margin-bottom: 20px; border-radius: 5px;">
+  <strong>Room: r1</strong><br>
+  <span id="userList">Connecting...</span>
+</div>
+
+<div id="status" style="padding: 10px; margin-bottom: 10px; background: #d1ecf1; border-radius: 5px;">
+  Status: Ready
+</div>
+
 <button id="mic">Start Mic Stream</button>
 <br><br>
 
@@ -10,77 +19,127 @@
 <button id="fileBtn">Send Selected MP3</button>
 
 <script>
-const ws = new WebSocket("wss://socketbe.onrender.com"); // ← change this
-ws.onopen = () => ws.send(JSON.stringify({ type: "join", roomId: "r1" }));
+const ws = new WebSocket("wss://socketbe.onrender.com");
+ws.onopen = () => {
+  ws.send(JSON.stringify({ type: "join", roomId: "r1", userId: "Sender" }));
+};
 
 let pc;
-let senderTrack; // keep current track (mic or mp3)
+let senderTrack;
+
+function updateStatus(msg) {
+  document.getElementById("status").textContent = "Status: " + msg;
+}
+
+function updateRoomStatus(users) {
+  const userList = document.getElementById("userList");
+  if (users.length === 0) {
+    userList.textContent = "No users in room";
+  } else {
+    userList.textContent = `Users in room (${users.length}): ${users.join(", ")}`;
+  }
+}
 
 async function createPeerConnection() {
+  if (pc) {
+    pc.close();
+  }
+  
   pc = new RTCPeerConnection();
 
   pc.onicecandidate = (e) => {
-    if (e.candidate) ws.send(JSON.stringify({ type: "ice", candidate: e.candidate }));
+    if (e.candidate) {
+      ws.send(JSON.stringify({ type: "ice", candidate: e.candidate }));
+    }
   };
 
-  // Create offer only once
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  ws.send(JSON.stringify({ type: "offer", offer }));
+  pc.onconnectionstatechange = () => {
+    console.log("Connection state:", pc.connectionState);
+    updateStatus("Connection: " + pc.connectionState);
+  };
 }
 
-/* -------------------------
-   MODE 1: Microphone Stream
-------------------------- */
 document.getElementById("mic").onclick = async () => {
-  await createPeerConnection();
-
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-  // add first track only
-  senderTrack = stream.getAudioTracks()[0];
-  pc.addTrack(senderTrack, stream);
+  try {
+    updateStatus("Requesting microphone access...");
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    
+    await createPeerConnection();
+    
+    senderTrack = stream.getAudioTracks()[0];
+    pc.addTrack(senderTrack, stream);
+    
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: "offer", offer }));
+    
+    updateStatus("Microphone streaming!");
+  } catch (err) {
+    updateStatus("Error: " + err.message);
+    console.error(err);
+  }
 };
 
-/* -------------------------
-   MODE 2: MP3 File Stream
-------------------------- */
 document.getElementById("fileBtn").onclick = async () => {
   const file = document.getElementById("fileInput").files[0];
   if (!file) return alert("Please choose an MP3 file first");
 
-  await createPeerConnection();
+  try {
+    updateStatus("Preparing MP3 stream...");
+    
+    await createPeerConnection();
 
-  // create audio element for playback
-  const audio = new Audio();
-  audio.src = URL.createObjectURL(file);
-  audio.loop = false;
-  audio.play();
-
-  // capture the playing audio as a MediaStream
-  const stream = audio.captureStream
-    ? audio.captureStream()
-    : audio.mozCaptureStream(); // Firefox fallback
-
-  // wait until ready
-  await new Promise(r => setTimeout(r, 300));
-
-  senderTrack = stream.getAudioTracks()[0];
-  pc.addTrack(senderTrack, stream);
+    const audio = new Audio();
+    audio.src = URL.createObjectURL(file);
+    audio.loop = false;
+    
+    // Wait for audio to be ready
+    await new Promise((resolve, reject) => {
+      audio.onloadedmetadata = resolve;
+      audio.onerror = reject;
+      setTimeout(reject, 5000); // timeout after 5s
+    });
+    
+    // Capture stream BEFORE playing
+    const stream = audio.captureStream ? audio.captureStream() : audio.mozCaptureStream();
+    
+    senderTrack = stream.getAudioTracks()[0];
+    pc.addTrack(senderTrack, stream);
+    
+    // Create and send offer
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: "offer", offer }));
+    
+    // Now play the audio
+    await audio.play();
+    
+    updateStatus("MP3 streaming: " + file.name);
+    
+    audio.onended = () => {
+      updateStatus("MP3 finished playing");
+    };
+    
+  } catch (err) {
+    updateStatus("Error: " + err.message);
+    console.error(err);
+  }
 };
 
-/* -------------------------
-     RECEIVE WebRTC Answers
-------------------------- */
 ws.onmessage = async (e) => {
   const msg = JSON.parse(e.data);
 
   if (msg.type === "answer") {
     await pc.setRemoteDescription(msg.answer);
+    console.log("Received answer, connection should establish");
   }
 
   if (msg.type === "ice") {
     await pc.addIceCandidate(msg.candidate);
+  }
+
+  if (msg.type === "roomUpdate") {
+    updateRoomStatus(msg.users);
   }
 };
 </script>
