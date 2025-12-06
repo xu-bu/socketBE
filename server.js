@@ -6,40 +6,55 @@ const server = http.createServer((req, res) => {
   res.end("ok");
 });
 
-// websocket server
 const wss = new WebSocketServer({ server });
 
 const rooms = new Map();
 
-wss.on("connection", (ws) => {
-  ws.on("message", (raw, isBinary) => {
-  // 如果是二进制，不要 JSON.parse，直接广播
-  if (isBinary) {
-    rooms.get(ws.roomId)?.forEach((client) => {
-      if (client !== ws && client.readyState === 1) {
-        client.send(raw, { binary: true });
-      }
-    });
-    return;
-  }
+function broadcastRoomUpdate(roomId) {
+  const clients = rooms.get(roomId);
+  if (!clients) return;
 
-  // 否则是文本消息
-  const msg = JSON.parse(raw);
+  const users = clients.map((c) => c.userId).filter(Boolean);
+  const updateMsg = JSON.stringify({ type: "roomUpdate", users });
 
-  if (msg.type === "join") {
-    if (!rooms.has(msg.roomId)) rooms.set(msg.roomId, []);
-    rooms.get(msg.roomId).push(ws);
-    ws.roomId = msg.roomId;
-    return;
-  }
-
-  // 普通文本 relay
-  rooms.get(ws.roomId)?.forEach((client) => {
-    if (client !== ws && client.readyState === 1) {
-      client.send(JSON.stringify(msg));
+  clients.forEach((client) => {
+    if (client.readyState === 1) {
+      client.send(updateMsg);
     }
   });
-});
+}
+
+wss.on("connection", (ws) => {
+  ws.on("message", (raw, isBinary) => {
+    if (isBinary) {
+      rooms.get(ws.roomId)?.forEach((client) => {
+        if (client !== ws && client.readyState === 1) {
+          client.send(raw, { binary: true });
+        }
+      });
+      return;
+    }
+
+    const msg = JSON.parse(raw);
+
+    if (msg.type === "join") {
+      if (!rooms.has(msg.roomId)) rooms.set(msg.roomId, []);
+      rooms.get(msg.roomId).push(ws);
+      ws.roomId = msg.roomId;
+      ws.userId = msg.userId || "Anonymous";
+
+      // Broadcast updated user list to all in room
+      broadcastRoomUpdate(msg.roomId);
+      return;
+    }
+
+    // Relay other messages
+    rooms.get(ws.roomId)?.forEach((client) => {
+      if (client !== ws && client.readyState === 1) {
+        client.send(JSON.stringify(msg));
+      }
+    });
+  });
 
   ws.on("close", () => {
     if (ws.roomId && rooms.has(ws.roomId)) {
@@ -47,13 +62,14 @@ wss.on("connection", (ws) => {
         ws.roomId,
         rooms.get(ws.roomId).filter((c) => c !== ws)
       );
+      // Broadcast updated user list after someone leaves
+      broadcastRoomUpdate(ws.roomId);
     }
   });
 });
 
 const PORT = process.env.PORT || 10000;
 
-// MUST LISTEN ON 0.0.0.0
 server.listen(PORT, "0.0.0.0", () => {
   console.log("Signaling server running on port " + PORT);
 });
