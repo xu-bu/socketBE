@@ -3,76 +3,82 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-  body { font-family: Arial, sans-serif; padding: 20px; }
-  #enableAudio { 
+  body { 
+    font-family: Arial, sans-serif; 
+    padding: 20px;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+  .button { 
     padding: 15px 30px; 
     font-size: 18px; 
     background: #4CAF50; 
     color: white; 
     border: none; 
     border-radius: 5px; 
-    cursor: pointer; 
+    cursor: pointer;
+    margin: 5px;
   }
-  #enableAudio:active { background: #45a049; }
+  .button:active { background: #45a049; }
+  .button:disabled { background: #ccc; cursor: not-allowed; }
+  .button.error { background: #f44336; }
+  .card {
+    background: #f0f0f0;
+    padding: 15px;
+    margin-bottom: 20px;
+    border-radius: 8px;
+  }
+  .status {
+    padding: 10px;
+    margin-bottom: 10px;
+    background: #fff3cd;
+    border-radius: 5px;
+  }
+  .info {
+    font-size: 14px;
+    color: #666;
+    margin-top: 10px;
+  }
 </style>
 </head>
 <body>
-<h3>Receiver</h3>
+<h2>🎧 PCM Audio Receiver</h2>
 
-<div id="roomStatus" style="background: #f0f0f0; padding: 10px; margin-bottom: 20px; border-radius: 5px;">
+<div class="card">
   <strong>Room: r1</strong><br>
   <span id="userList">Connecting...</span>
 </div>
 
-<div id="status" style="padding: 10px; margin-bottom: 10px; background: #fff3cd; border-radius: 5px;">
+<div id="status" class="status">
   Status: Waiting for audio stream...
 </div>
 
-<button id="enableAudio" style="display: none;">
+<button id="enableAudio" class="button" style="display: none;">
   🔊 Click to Enable Audio
 </button>
 
-<button id="quitBtn" style="padding: 10px 20px; background: #f44336; color: white; border: none; border-radius: 5px; cursor: pointer; margin-top: 10px;">
+<button id="quitBtn" class="button error">
   ❌ Quit Room
 </button>
 
-<audio id="remote" autoplay playsinline></audio>
+<div class="info">
+  <strong>Instructions:</strong><br>
+  • This receiver handles raw PCM audio from Android app<br>
+  • Audio format: 44100 Hz, 16-bit, Stereo<br>
+  • Click "Enable Audio" if autoplay is blocked
+</div>
 
 <script>
 const ws = new WebSocket("wss://socketbe.onrender.com");
+let audioContext;
+let audioQueue = [];
+let isPlaying = false;
+let nextPlayTime = 0;
+
 ws.onopen = () => {
-  ws.send(JSON.stringify({ type: "join", roomId: "r1", userId: "Receiver" }));
+  ws.send(JSON.stringify({ type: "join", roomId: "r1", userId: "PCMReceiver" }));
+  updateStatus("Connected - Waiting for audio...");
 };
-
-let pc = new RTCPeerConnection();
-let remoteStream = null;
-let audioEnabled = false;
-
-function cleanup() {
-  // Stop audio
-  const audio = document.getElementById("remote");
-  audio.pause();
-  audio.srcObject = null;
-  
-  // Stop all tracks in remote stream
-  if (remoteStream) {
-    remoteStream.getTracks().forEach(track => track.stop());
-    remoteStream = null;
-  }
-  
-  // Close peer connection
-  if (pc) {
-    pc.close();
-    pc = null;
-  }
-  
-  // Close websocket
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.close();
-  }
-  
-  updateStatus("Disconnected from room");
-}
 
 function updateStatus(msg) {
   document.getElementById("status").textContent = "Status: " + msg;
@@ -88,126 +94,131 @@ function updateRoomStatus(users) {
   }
 }
 
-// Enable audio button - try to play the remote stream
-document.getElementById("enableAudio").onclick = async () => {
-  const audio = document.getElementById("remote");
+function initAudioContext() {
+  if (audioContext) return;
   
-  console.log("Button clicked");
-  console.log("Audio srcObject:", audio.srcObject);
-  console.log("Remote stream:", remoteStream);
+  audioContext = new (window.AudioContext || window.webkitAudioContext)({
+    sampleRate: 44100
+  });
   
-  // Make sure we have the stream
-  if (remoteStream) {
-    audio.srcObject = remoteStream;
+  console.log("AudioContext initialized, sample rate:", audioContext.sampleRate);
+  updateStatus("Audio context ready - Listening for PCM data...");
+}
+
+function playPCMData(pcmData) {
+  if (!audioContext) {
+    console.log("AudioContext not initialized, trying now...");
+    initAudioContext();
   }
   
-  // Try to play
-  try {
-    // For mobile, set volume explicitly
-    audio.volume = 1.0;
-    audio.muted = false;
-    
-    await audio.play();
-    
-    audioEnabled = true;
-    document.getElementById("enableAudio").style.display = "none";
-    updateStatus("Audio enabled and playing! 🔊");
-    
-    console.log("Audio playing successfully");
-  } catch (e) {
-    console.error("Audio play failed:", e);
-    updateStatus("Failed to play: " + e.message + " - Try again!");
+  if (audioContext.state === 'suspended') {
+    audioContext.resume();
+  }
+  
+  // Convert PCM bytes to Float32Array for Web Audio API
+  const int16Array = new Int16Array(pcmData);
+  const float32Array = new Float32Array(int16Array.length);
+  
+  // Convert 16-bit PCM to float32 (-1.0 to 1.0)
+  for (let i = 0; i < int16Array.length; i++) {
+    float32Array[i] = int16Array[i] / 32768.0;
+  }
+  
+  // Create audio buffer (stereo)
+  const samples = float32Array.length / 2;
+  const audioBuffer = audioContext.createBuffer(2, samples, 44100);
+  
+  // De-interleave stereo data
+  const leftChannel = audioBuffer.getChannelData(0);
+  const rightChannel = audioBuffer.getChannelData(1);
+  
+  for (let i = 0; i < samples; i++) {
+    leftChannel[i] = float32Array[i * 2];
+    rightChannel[i] = float32Array[i * 2 + 1];
+  }
+  
+  // Create and schedule buffer source
+  const source = audioContext.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(audioContext.destination);
+  
+  // Schedule playback
+  const currentTime = audioContext.currentTime;
+  if (nextPlayTime < currentTime) {
+    nextPlayTime = currentTime;
+  }
+  
+  source.start(nextPlayTime);
+  nextPlayTime += audioBuffer.duration;
+  
+  if (!isPlaying) {
+    isPlaying = true;
+    updateStatus("🔊 Playing PCM audio!");
+  }
+}
+
+// Enable audio button
+document.getElementById("enableAudio").onclick = () => {
+  initAudioContext();
+  if (audioContext && audioContext.state === 'suspended') {
+    audioContext.resume().then(() => {
+      updateStatus("Audio enabled and ready!");
+      document.getElementById("enableAudio").style.display = "none";
+    });
   }
 };
 
-// Quit button - disconnect from room
+// Quit button
 document.getElementById("quitBtn").onclick = () => {
   if (confirm("Are you sure you want to quit the room?")) {
-    cleanup();
-    document.getElementById("enableAudio").style.display = "none";
+    if (audioContext) {
+      audioContext.close();
+      audioContext = null;
+    }
+    ws.close();
+    updateStatus("Disconnected");
     document.getElementById("quitBtn").disabled = true;
-    document.getElementById("quitBtn").textContent = "Disconnected";
     document.getElementById("userList").textContent = "Not connected";
   }
 };
 
-pc.ontrack = (e) => {
-  console.log("Received track:", e.track.kind, "readyState:", e.track.readyState);
-  
-  // Store the stream
-  remoteStream = e.streams[0];
-  
-  const audio = document.getElementById("remote");
-  audio.srcObject = remoteStream;
-  
-  updateStatus("Audio stream received! Setting up...");
-  
-  // Check if track is actually producing audio
-  e.track.onended = () => {
-    console.log("Track ended");
-    updateStatus("Audio stream ended");
-  };
-  
-  e.track.onmute = () => {
-    console.log("Track muted");
-  };
-  
-  e.track.onunmute = () => {
-    console.log("Track unmuted");
-  };
-  
-  // Try autoplay first
-  audio.play()
-    .then(() => {
-      console.log("Autoplay succeeded");
-      audioEnabled = true;
-      updateStatus("Audio playing automatically! 🔊");
-    })
-    .catch(err => {
-      console.log("Autoplay blocked:", err.name);
-      // Show button for user interaction
-      document.getElementById("enableAudio").style.display = "block";
-      updateStatus("🔴 Click the button below to enable audio!");
-    });
-};
-
-pc.onicecandidate = (e) => {
-  if (e.candidate) {
-    ws.send(JSON.stringify({ type: "ice", candidate: e.candidate }));
-  }
-};
-
-pc.onconnectionstatechange = () => {
-  console.log("Connection state:", pc.connectionState);
-  if (pc.connectionState === "connected") {
-    updateStatus("WebRTC connected! Waiting for audio...");
-  } else if (pc.connectionState === "failed") {
-    updateStatus("Connection failed!");
-  } else if (pc.connectionState === "disconnected") {
-    updateStatus("Disconnected");
-  }
-};
-
 ws.onmessage = async (e) => {
+  // Handle binary PCM data
+  if (e.data instanceof Blob) {
+    const arrayBuffer = await e.data.arrayBuffer();
+    playPCMData(arrayBuffer);
+    return;
+  }
+  
+  // Handle text messages (JSON)
   const msg = JSON.parse(e.data);
-
-  if (msg.type === "offer") {
-    console.log("Received offer");
-    await pc.setRemoteDescription(msg.offer);
-    const ans = await pc.createAnswer();
-    await pc.setLocalDescription(ans);
-    ws.send(JSON.stringify({ type: "answer", answer: ans }));
-    updateStatus("Sent answer, establishing connection...");
-  }
-
-  if (msg.type === "ice") {
-    await pc.addIceCandidate(msg.candidate);
-  }
-
+  
   if (msg.type === "roomUpdate") {
     updateRoomStatus(msg.users);
   }
 };
+
+ws.onerror = (error) => {
+  console.error("WebSocket error:", error);
+  updateStatus("Connection error!");
+};
+
+ws.onclose = () => {
+  updateStatus("Disconnected from server");
+  isPlaying = false;
+};
+
+// Try to initialize audio context on user interaction
+document.addEventListener('click', () => {
+  if (!audioContext) {
+    try {
+      initAudioContext();
+    } catch (e) {
+      console.log("Need explicit button click:", e);
+      document.getElementById("enableAudio").style.display = "block";
+    }
+  }
+}, { once: true });
 </script>
 </body>
 </html>
